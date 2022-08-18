@@ -1,0 +1,2 @@
+gcc gen_psk.c -o gen_psk
+./gen_psk psk.der 13aa0f7e 5ac851e04710692cdb8da27668839d604353668f78158a3f6a98f34045057283
