@@ -1,0 +1,300 @@
+From baa11fb5e5746917ef4944af14d7b536318d3e2b Mon Sep 17 00:00:00 2001
+From: Varad Gautam <varad.gautam@suse.com>
+Date: Thu, 8 Apr 2021 16:14:59 +0200
+Subject: [PATCH 01/22] X.509: Parse RSASSA-PSS style certificates
+
+An X.509 wrapper for a RSASSA-PSS signature contains additional
+signature parameters over the PKCSv.15 encoding scheme. Extend the
+x509 parser to allow parsing RSASSA-PSS encoded certificates, with
+the defaults taken from RFC8017.
+
+References: https://tools.ietf.org/html/rfc8017#appendix-C
+Signed-off-by: Varad Gautam <varad.gautam@suse.com>
+---
+ crypto/asymmetric_keys/Makefile           |   5 +-
+ crypto/asymmetric_keys/x509_cert_parser.c | 148 ++++++++++++++++++++++
+ crypto/asymmetric_keys/x509_rsassa.asn1   |  17 +++
+ include/crypto/public_key.h               |   4 +
+ include/linux/oid_registry.h              |   3 +
+ 5 files changed, 176 insertions(+), 1 deletion(-)
+ create mode 100644 crypto/asymmetric_keys/x509_rsassa.asn1
+
+diff --git a/crypto/asymmetric_keys/Makefile b/crypto/asymmetric_keys/Makefile
+index 0d1fa1b692c6..81b74c552f06 100644
+--- a/crypto/asymmetric_keys/Makefile
++++ b/crypto/asymmetric_keys/Makefile
+@@ -19,6 +19,7 @@ obj-$(CONFIG_X509_CERTIFICATE_PARSER) += x509_key_parser.o
+ x509_key_parser-y := \
+ 	x509.asn1.o \
+ 	x509_akid.asn1.o \
++	x509_rsassa.asn1.o \
+ 	x509_cert_parser.o \
+ 	x509_loader.o \
+ 	x509_public_key.o
+@@ -26,10 +27,12 @@ x509_key_parser-$(CONFIG_FIPS_SIGNATURE_SELFTEST) += selftest.o
+ 
+ $(obj)/x509_cert_parser.o: \
+ 	$(obj)/x509.asn1.h \
+-	$(obj)/x509_akid.asn1.h
++	$(obj)/x509_akid.asn1.h \
++	$(obj)/x509_rsassa.asn1.h
+ 
+ $(obj)/x509.asn1.o: $(obj)/x509.asn1.c $(obj)/x509.asn1.h
+ $(obj)/x509_akid.asn1.o: $(obj)/x509_akid.asn1.c $(obj)/x509_akid.asn1.h
++$(obj)/x509_rsassa.asn1.o: $(obj)/x509_rsassa.asn1.c $(obj)/x509_rsassa.asn1.h
+ 
+ #
+ # PKCS#8 private key handling
+diff --git a/crypto/asymmetric_keys/x509_cert_parser.c b/crypto/asymmetric_keys/x509_cert_parser.c
+index 7a9b084e2043..894f195649de 100644
+--- a/crypto/asymmetric_keys/x509_cert_parser.c
++++ b/crypto/asymmetric_keys/x509_cert_parser.c
+@@ -15,6 +15,7 @@
+ #include "x509_parser.h"
+ #include "x509.asn1.h"
+ #include "x509_akid.asn1.h"
++#include "x509_rsassa.asn1.h"
+ 
+ struct x509_parse_context {
+ 	struct x509_certificate	*cert;		/* Certificate being constructed */
+@@ -36,6 +37,8 @@ struct x509_parse_context {
+ 	const void	*raw_akid;		/* Raw authorityKeyId in ASN.1 */
+ 	const void	*akid_raw_issuer;	/* Raw directoryName in authorityKeyId */
+ 	unsigned	akid_raw_issuer_size;
++	const void	*raw_sig_params;	/* Signature AlgorithmIdentifier.parameters */
++	unsigned	raw_sig_params_size;
+ };
+ 
+ /*
+@@ -99,6 +102,15 @@ struct x509_certificate *x509_cert_parse(const void *data, size_t datalen)
+ 		}
+ 	}
+ 
++	if (strcmp(ctx->cert->sig->encoding, "pss") == 0) {
++		pr_devel("rsa enc=pss hash=%s mgf=%s mgf_hash=%s salt=0x%x tf=0x%x\n",
++			 ctx->cert->sig->hash_algo,
++			 ctx->cert->sig->mgf,
++			 ctx->cert->sig->mgf_hash_algo,
++			 ctx->cert->sig->salt_length,
++			 ctx->cert->sig->trailer_field);
++	}
++
+ 	ret = -ENOMEM;
+ 	cert->pub->key = kmemdup(ctx->key, ctx->key_size, GFP_KERNEL);
+ 	if (!cert->pub->key)
+@@ -191,6 +203,7 @@ int x509_note_sig_algo(void *context, size_t hdrlen, unsigned char tag,
+ 		       const void *value, size_t vlen)
+ {
+ 	struct x509_parse_context *ctx = context;
++	int ret = 0;
+ 
+ 	pr_debug("PubKey Algo: %u\n", ctx->last_oid);
+ 
+@@ -255,6 +268,35 @@ int x509_note_sig_algo(void *context, size_t hdrlen, unsigned char tag,
+ 	case OID_SM2_with_SM3:
+ 		ctx->cert->sig->hash_algo = "sm3";
+ 		goto sm2;
++
++	case OID_rsassaPSS:
++		/* For rsassaPSS, the hash algorithm is packed as a mandatory
++		 * parameter in AlgorithmIdentifier.parameters.
++		 */
++		if (ctx->raw_sig_params == NULL && ctx->raw_sig_params_size != 1)
++			return -EBADMSG;
++
++		ctx->cert->sig->pkey_algo = "rsa";
++		ctx->cert->sig->encoding = "pss";
++		ctx->sig_algo = ctx->last_oid;
++		if (ctx->raw_sig_params) {
++			ret = asn1_ber_decoder(&x509_rsassa_decoder, ctx,
++					       ctx->raw_sig_params,
++					       ctx->raw_sig_params_size);
++			if (ret < 0)
++				return ret;
++		}
++
++		/* Fill in RSASSA-PSS-params defaults if left out. */
++		if (!ctx->cert->sig->hash_algo)
++			ctx->cert->sig->hash_algo = "sha1";
++		if (!ctx->cert->sig->mgf)
++			ctx->cert->sig->mgf = "mgf1";
++		if (!ctx->cert->sig->mgf_hash_algo)
++			ctx->cert->sig->mgf_hash_algo = "sha1";
++		ctx->cert->sig->trailer_field = 0xbc;
++
++		return 0;
+ 	}
+ 
+ rsa_pkcs1:
+@@ -477,6 +519,18 @@ int x509_note_params(void *context, size_t hdrlen,
+ {
+ 	struct x509_parse_context *ctx = context;
+ 
++	if (ctx->last_oid == OID_rsassaPSS && !ctx->raw_sig_params) {
++		/* Stash AlgorithmIdentifier.parameters for RSASSA-PSS. */
++		ctx->raw_sig_params_size = vlen + hdrlen;
++		if (ctx->raw_sig_params_size) {
++			ctx->raw_sig_params = value - hdrlen;
++		} else {
++			ctx->raw_sig_params = NULL;
++			ctx->raw_sig_params_size = 1;
++		}
++		return 0;
++	}
++
+ 	/*
+ 	 * AlgorithmIdentifier is used three times in the x509, we should skip
+ 	 * first and ignore third, using second one which is after subject and
+@@ -765,3 +819,97 @@ int x509_akid_note_serial(void *context, size_t hdrlen,
+ 	ctx->cert->sig->auth_ids[0] = kid;
+ 	return 0;
+ }
++
++int x509_note_hash_algo(void *context, size_t hdrlen,
++			unsigned char tag,
++			const void *value, size_t vlen)
++{
++	struct x509_parse_context *ctx = context;
++	const char **ptr = NULL;
++
++	if (ctx->last_oid != OID_rsassaPSS)
++		return -EBADMSG;
++
++	if (ctx->cert->sig->mgf)
++		ptr = &ctx->cert->sig->mgf_hash_algo;
++	else
++		ptr = &ctx->cert->sig->hash_algo;
++
++	switch (look_up_OID(value, vlen)) {
++	case OID_sha224:
++		*ptr = "sha224";
++		break;
++	case OID_sha256:
++		*ptr = "sha256";
++		break;
++	case OID_sha384:
++		*ptr = "sha384";
++		break;
++	case OID_sha512:
++		*ptr = "sha512";
++		break;
++	case OID_sha1:
++	default:
++		*ptr = "sha1";
++		break;
++	}
++
++	return 0;
++}
++
++int x509_note_hash_algo_params(void *context, size_t hdrlen,
++			       unsigned char tag,
++			       const void *value, size_t vlen)
++{
++	return -EOPNOTSUPP;
++}
++
++int x509_note_mgf(void *context, size_t hdrlen,
++		  unsigned char tag,
++		  const void *value, size_t vlen)
++{
++	struct x509_parse_context *ctx = context;
++
++	if (ctx->last_oid != OID_rsassaPSS)
++		return -EBADMSG;
++
++	/* RFC8017 PKCS1MGFAlgorithms */
++	if (look_up_OID(value, vlen) != OID_mgf1)
++		return -EINVAL;
++
++	ctx->cert->sig->mgf = "mgf1";
++
++	return 0;
++}
++
++int x509_note_salt_length(void *context, size_t hdrlen,
++			  unsigned char tag,
++			  const void *value, size_t vlen)
++{
++	struct x509_parse_context *ctx = context;
++
++	if (ctx->last_oid != OID_rsassaPSS)
++		return -EBADMSG;
++
++	if (!value || !vlen || vlen > sizeof(ctx->cert->sig->salt_length))
++		return -EINVAL;
++
++	ctx->cert->sig->salt_length = (vlen == 2) ?
++		be16_to_cpu(*((__force __be16 *) value)) : *((u8 *) value);
++
++	return 0;
++}
++
++int x509_note_trailer_field(void *context, size_t hdrlen,
++			    unsigned char tag,
++			    const void *value, size_t vlen)
++{
++	struct x509_parse_context *ctx = context;
++
++	if (ctx->last_oid != OID_rsassaPSS)
++		return -EBADMSG;
++
++	/* trailerField 0xbc per RFC8017 A.2.3 regardless of if
++	 * specified. */
++	return 0;
++}
+diff --git a/crypto/asymmetric_keys/x509_rsassa.asn1 b/crypto/asymmetric_keys/x509_rsassa.asn1
+new file mode 100644
+index 000000000000..e524b978856d
+--- /dev/null
++++ b/crypto/asymmetric_keys/x509_rsassa.asn1
+@@ -0,0 +1,17 @@
++-- RFC8017
++RSASSA-PSS-params ::= SEQUENCE {
++	hashAlgorithm      [0] HashAlgorithm DEFAULT,
++	maskGenAlgorithm   [1] MaskGenAlgorithm DEFAULT,
++	saltLength         [2] INTEGER DEFAULT ({ x509_note_salt_length }),
++	trailerField       [3] INTEGER DEFAULT ({ x509_note_trailer_field })
++}
++
++HashAlgorithm ::= SEQUENCE {
++	algorithm		OBJECT IDENTIFIER ({ x509_note_hash_algo }),
++	parameters		ANY OPTIONAL ({ x509_note_hash_algo_params })
++}
++
++MaskGenAlgorithm ::= SEQUENCE {
++	mgf	OBJECT IDENTIFIER ({ x509_note_mgf }),
++	parameters	HashAlgorithm
++}
+diff --git a/include/crypto/public_key.h b/include/crypto/public_key.h
+index 68f7aa2a7e55..5dbe93823c30 100644
+--- a/include/crypto/public_key.h
++++ b/include/crypto/public_key.h
+@@ -46,6 +46,10 @@ struct public_key_signature {
+ 	const char *encoding;
+ 	const void *data;
+ 	unsigned int data_size;
++	const char *mgf;
++	const char *mgf_hash_algo;
++	u16 salt_length;
++	u16 trailer_field;
+ };
+ 
+ extern void public_key_signature_free(struct public_key_signature *sig);
+diff --git a/include/linux/oid_registry.h b/include/linux/oid_registry.h
+index 0f4a8903922a..83e407fa0ef3 100644
+--- a/include/linux/oid_registry.h
++++ b/include/linux/oid_registry.h
+@@ -135,6 +135,9 @@ enum OID {
+ 	OID_SM2_with_SM3,		/* 1.2.156.10197.1.501 */
+ 	OID_sm3WithRSAEncryption,	/* 1.2.156.10197.1.504 */
+ 
++	OID_mgf1,			/* 1.2.840.113549.1.1.8 */
++	OID_rsassaPSS,			/* 1.2.840.113549.1.1.10 */
++
+ 	/* TCG defined OIDS for TPM based keys */
+ 	OID_TPMLoadableKey,		/* 2.23.133.10.1.3 */
+ 	OID_TPMImportableKey,		/* 2.23.133.10.1.4 */
+-- 
+2.31.1
+

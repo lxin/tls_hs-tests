@@ -1,0 +1,147 @@
+From 731c50c1e5fb73e155312288a18365fdcbd0a743 Mon Sep 17 00:00:00 2001
+From: Varad Gautam <varad.gautam@suse.com>
+Date: Thu, 8 Apr 2021 16:15:09 +0200
+Subject: [PATCH 11/22] crypto: Scaffolding for RSA-PSS signature style
+
+Add a crypto_template for rsa-psspad, hidden behind
+CONFIG_CRYPTO_RSASSA_PSS. Set the sign/verify/encrypt/decrypt
+operations to return -EOPNOTSUPP, to be implemented in the future
+
+Signed-off-by: Varad Gautam <varad.gautam@suse.com>
+---
+ crypto/Kconfig                |  6 ++++++
+ crypto/Makefile               |  1 +
+ crypto/rsa-psspad.c           | 39 +++++++++++++++++++++++++++++++++++
+ crypto/rsa.c                  | 20 +++++++++++++++---
+ include/crypto/internal/rsa.h |  3 +++
+ 5 files changed, 66 insertions(+), 3 deletions(-)
+ create mode 100644 crypto/rsa-psspad.c
+
+diff --git a/crypto/Kconfig b/crypto/Kconfig
+index 9c86f7045157..1605e826d876 100644
+--- a/crypto/Kconfig
++++ b/crypto/Kconfig
+@@ -246,6 +246,12 @@ config CRYPTO_RSA
+ 	help
+ 	  RSA (Rivest-Shamir-Adleman) public key algorithm (RFC8017)
+ 
++config CRYPTO_RSASSA_PSS
++	bool "RSASSA-PSS algorithm"
++	select CRYPTO_RSA
++	help
++	  RSASSA-PSS signature verification scheme.
++
+ config CRYPTO_DH
+ 	tristate "DH (Diffie-Hellman)"
+ 	select CRYPTO_KPP
+diff --git a/crypto/Makefile b/crypto/Makefile
+index dd532a35f465..e6c1ac326520 100644
+--- a/crypto/Makefile
++++ b/crypto/Makefile
+@@ -42,6 +42,7 @@ rsa_generic-y += rsa_helper.o
+ rsa_generic-y += rsa-common.o
+ rsa_generic-y += rsa-pkcs1pad.o
+ obj-$(CONFIG_CRYPTO_RSA) += rsa_generic.o
++obj-$(CONFIG_CRYPTO_RSASSA_PSS) += rsa-psspad.o
+ 
+ $(obj)/sm2signature.asn1.o: $(obj)/sm2signature.asn1.c $(obj)/sm2signature.asn1.h
+ $(obj)/sm2.o: $(obj)/sm2signature.asn1.h
+diff --git a/crypto/rsa-psspad.c b/crypto/rsa-psspad.c
+new file mode 100644
+index 000000000000..0e5422b05c08
+--- /dev/null
++++ b/crypto/rsa-psspad.c
+@@ -0,0 +1,39 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * RSASSA-PSS signature scheme.
++ *
++ * Copyright (C) 2021, SUSE
++ * Authors: Varad Gautam <varad.gautam@suse.com>
++ */
++
++#include <crypto/internal/akcipher.h>
++#include <crypto/internal/rsa-common.h>
++
++static int psspad_s_v_e_d(struct akcipher_request *req)
++{
++	return -EOPNOTSUPP;
++}
++
++static struct akcipher_alg psspad_alg = {
++	.init = rsapad_akcipher_init_tfm,
++	.exit = rsapad_akcipher_exit_tfm,
++
++	.encrypt = psspad_s_v_e_d,
++	.decrypt = psspad_s_v_e_d,
++	.sign = psspad_s_v_e_d,
++	.verify = psspad_s_v_e_d,
++	.set_pub_key = rsapad_set_pub_key,
++	.set_priv_key = rsapad_set_priv_key,
++	.max_size = rsapad_get_max_size
++};
++
++static int psspad_create(struct crypto_template *tmpl, struct rtattr **tb)
++{
++	return rsapad_akcipher_create(tmpl, tb, &psspad_alg);
++}
++
++struct crypto_template rsa_psspad_tmpl = {
++	.name = "psspad",
++	.create = psspad_create,
++	.module = THIS_MODULE,
++};
+diff --git a/crypto/rsa.c b/crypto/rsa.c
+index 4f07031d7ed8..c0c766a77fdf 100644
+--- a/crypto/rsa.c
++++ b/crypto/rsa.c
+@@ -325,17 +325,31 @@ static int __init rsa_init(void)
+ 		return err;
+ 
+ 	err = crypto_register_template(&rsa_pkcs1pad_tmpl);
++	if (err)
++		goto out_err;
++
++#ifdef CONFIG_CRYPTO_RSASSA_PSS
++	err = crypto_register_template(&rsa_psspad_tmpl);
+ 	if (err) {
+-		crypto_unregister_akcipher(&rsa);
+-		return err;
++		crypto_unregister_template(&rsa_pkcs1pad_tmpl);
++		goto out_err;
+ 	}
++#endif
+ 
+-	return 0;
++	goto out;
++
++out_err:
++	crypto_unregister_akcipher(&rsa);
++out:
++	return err;
+ }
+ 
+ static void __exit rsa_exit(void)
+ {
+ 	crypto_unregister_template(&rsa_pkcs1pad_tmpl);
++#ifdef CONFIG_CRYPTO_RSASSA_PSS
++	crypto_unregister_template(&rsa_psspad_tmpl);
++#endif
+ 	crypto_unregister_akcipher(&rsa);
+ }
+ 
+diff --git a/include/crypto/internal/rsa.h b/include/crypto/internal/rsa.h
+index 76a09dfa027d..dbd695ab0833 100644
+--- a/include/crypto/internal/rsa.h
++++ b/include/crypto/internal/rsa.h
+@@ -66,4 +66,7 @@ struct rsa_mpi_key {
+ };
+ 
+ extern struct crypto_template rsa_pkcs1pad_tmpl;
++#ifdef CONFIG_CRYPTO_RSASSA_PSS
++extern struct crypto_template rsa_psspad_tmpl;
++#endif /* CONFIG_CRYPTO_RSASSA_PSS */
+ #endif
+-- 
+2.31.1
+

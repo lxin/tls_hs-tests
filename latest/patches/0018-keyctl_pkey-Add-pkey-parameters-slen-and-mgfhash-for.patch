@@ -1,0 +1,87 @@
+From 14f81d903cc711021dccc31f4286d0140c35e800 Mon Sep 17 00:00:00 2001
+From: Varad Gautam <varad.gautam@suse.com>
+Date: Thu, 8 Apr 2021 16:15:16 +0200
+Subject: [PATCH 18/22] keyctl_pkey: Add pkey parameters slen and mgfhash for
+ PSS
+
+keyctl pkey_* operations accept enc and hash parameters at present.
+RSASSA-PSS signatures also require passing in the signature salt
+length and the mgf hash function.
+
+Add parameters:
+- 'slen' to feed in salt length of a PSS signature.
+- 'mgfhash' to feed in the hash function used for MGF.
+
+Signed-off-by: Varad Gautam <varad.gautam@suse.com>
+CC: Jarkko Sakkinen <jarkko@kernel.org>
+---
+ crypto/asymmetric_keys/asymmetric_type.c |  2 ++
+ include/linux/keyctl.h                   |  2 ++
+ security/keys/keyctl_pkey.c              | 13 +++++++++++++
+ 3 files changed, 17 insertions(+)
+
+diff --git a/crypto/asymmetric_keys/asymmetric_type.c b/crypto/asymmetric_keys/asymmetric_type.c
+index 41a2f0eb4ce4..db5cc23a5a17 100644
+--- a/crypto/asymmetric_keys/asymmetric_type.c
++++ b/crypto/asymmetric_keys/asymmetric_type.c
+@@ -602,6 +602,8 @@ static int asymmetric_key_verify_signature(struct kernel_pkey_params *params,
+ 		.hash_algo	= params->hash_algo,
+ 		.digest		= (void *)in,
+ 		.s		= (void *)in2,
++		.salt_length	= params->slen,
++		.mgf_hash_algo	= params->mgf_hash_algo,
+ 	};
+ 
+ 	return verify_signature(params->key, &sig);
+diff --git a/include/linux/keyctl.h b/include/linux/keyctl.h
+index 5b79847207ef..753d004d76ec 100644
+--- a/include/linux/keyctl.h
++++ b/include/linux/keyctl.h
+@@ -37,6 +37,8 @@ struct kernel_pkey_params {
+ 		__u32	in2_len;	/* 2nd input data size (verify) */
+ 	};
+ 	enum kernel_pkey_operation op : 8;
++	__u32		slen;
++	const char	*mgf_hash_algo;
+ };
+ 
+ #endif /* __LINUX_KEYCTL_H */
+diff --git a/security/keys/keyctl_pkey.c b/security/keys/keyctl_pkey.c
+index 97bc27bbf079..0d5e02a63611 100644
+--- a/security/keys/keyctl_pkey.c
++++ b/security/keys/keyctl_pkey.c
+@@ -24,11 +24,15 @@ enum {
+ 	Opt_err,
+ 	Opt_enc,		/* "enc=<encoding>" eg. "enc=oaep" */
+ 	Opt_hash,		/* "hash=<digest-name>" eg. "hash=sha1" */
++	Opt_slen,		/* "slen=<salt-length>" eg. "slen=32" */
++	Opt_mgfhash,		/* "mgfhash=<digest-name>" eg. "mgfhash=sha1" */
+ };
+ 
+ static const match_table_t param_keys = {
+ 	{ Opt_enc,	"enc=%s" },
+ 	{ Opt_hash,	"hash=%s" },
++	{ Opt_slen,	"slen=%u" },
++	{ Opt_mgfhash,	"mgfhash=%s" },
+ 	{ Opt_err,	NULL }
+ };
+ 
+@@ -63,6 +67,15 @@ static int keyctl_pkey_params_parse(struct kernel_pkey_params *params)
+ 			params->hash_algo = q;
+ 			break;
+ 
++		case Opt_slen:
++			if (kstrtouint(q, 0, &params->slen))
++				return -EINVAL;
++			break;
++
++		case Opt_mgfhash:
++			params->mgf_hash_algo = q;
++			break;
++
+ 		default:
+ 			return -EINVAL;
+ 		}
+-- 
+2.31.1
+

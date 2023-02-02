@@ -1,0 +1,57 @@
+From 5b851dba3a36eab701778de134b29a08a3984cba Mon Sep 17 00:00:00 2001
+From: Varad Gautam <varad.gautam@suse.com>
+Date: Thu, 8 Apr 2021 16:15:10 +0200
+Subject: [PATCH 12/22] crypto: rsa-psspad: Introduce shash alloc/dealloc
+ helpers
+
+RSASSA-PSS verify operation needs to compute digests for its
+Mask Generation Function (MGF1), and for digest comparison.
+
+Add helpers to populate a crypto_shash and desc for use in both cases.
+
+Signed-off-by: Varad Gautam <varad.gautam@suse.com>
+---
+ crypto/rsa-psspad.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/crypto/rsa-psspad.c b/crypto/rsa-psspad.c
+index 0e5422b05c08..855e82ca071a 100644
+--- a/crypto/rsa-psspad.c
++++ b/crypto/rsa-psspad.c
+@@ -6,9 +6,33 @@
+  * Authors: Varad Gautam <varad.gautam@suse.com>
+  */
+ 
++#include <crypto/hash.h>
+ #include <crypto/internal/akcipher.h>
+ #include <crypto/internal/rsa-common.h>
+ 
++static int psspad_setup_shash(struct crypto_shash **hash_tfm, struct shash_desc **desc,
++			      const char *hash_algo)
++{
++	*hash_tfm = crypto_alloc_shash(hash_algo, 0, 0);
++	if (IS_ERR(*hash_tfm))
++		return PTR_ERR(*hash_tfm);
++
++	*desc = kzalloc(crypto_shash_descsize(*hash_tfm) + sizeof(**desc),
++			GFP_KERNEL);
++	if (!desc)
++		return -ENOMEM;
++
++	(*desc)->tfm = *hash_tfm;
++
++	return 0;
++}
++
++static void psspad_free_shash(struct crypto_shash *hash_tfm, struct shash_desc *desc)
++{
++	kfree(desc);
++	crypto_free_shash(hash_tfm);
++}
++
+ static int psspad_s_v_e_d(struct akcipher_request *req)
+ {
+ 	return -EOPNOTSUPP;
+-- 
+2.31.1
+

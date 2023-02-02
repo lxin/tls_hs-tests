@@ -1,0 +1,61 @@
+From 2402bc6b69b518a15cf10ab2bd4280a715fcace1 Mon Sep 17 00:00:00 2001
+From: Varad Gautam <varad.gautam@suse.com>
+Date: Thu, 8 Apr 2021 16:15:15 +0200
+Subject: [PATCH 17/22] crypto: Accept pss as valid encoding during signature
+ verification
+
+Accept pss encoding for public_key_verify_signature. If
+CONFIG_CRYPTO_RSASSA_PSS is disabled, crypto_alloc_akcipher will
+fail to find a pss backend anyway.
+
+Signed-off-by: Varad Gautam <varad.gautam@suse.com>
+Acked-by: Jarkko Sakkinen <jarkko@kernel.org>
+---
+ crypto/asymmetric_keys/public_key.c | 18 +++++++++++++-----
+ 1 file changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/crypto/asymmetric_keys/public_key.c b/crypto/asymmetric_keys/public_key.c
+index 2f8352e88860..1301080e82bb 100644
+--- a/crypto/asymmetric_keys/public_key.c
++++ b/crypto/asymmetric_keys/public_key.c
+@@ -76,17 +76,18 @@ software_key_determine_akcipher(const struct public_key *pkey,
+ 
+ 	if (strcmp(pkey->pkey_algo, "rsa") == 0) {
+ 		/*
+-		 * RSA signatures usually use EMSA-PKCS1-1_5 [RFC3447 sec 8.2].
++		 * RSA signatures usually use EMSA-PKCS1-1_5 [RFC3447 sec 8.2] or EMSA-PSS [RFC8017 sec 9.1].
+ 		 */
+-		if (strcmp(encoding, "pkcs1") == 0) {
++		if (strcmp(encoding, "pkcs1") == 0 || strcmp(encoding, "pss") == 0) {
+ 			if (!hash_algo)
+ 				n = snprintf(alg_name, CRYPTO_MAX_ALG_NAME,
+-					     "pkcs1pad(%s)",
++					     "%spad(%s)",
++					     encoding,
+ 					     pkey->pkey_algo);
+ 			else
+ 				n = snprintf(alg_name, CRYPTO_MAX_ALG_NAME,
+-					     "pkcs1pad(%s,%s)",
+-					     pkey->pkey_algo, hash_algo);
++					     "%spad(%s,%s)",
++					     encoding, pkey->pkey_algo, hash_algo);
+ 			return n >= CRYPTO_MAX_ALG_NAME ? -EINVAL : 0;
+ 		}
+ 		if (strcmp(encoding, "raw") != 0)
+@@ -424,6 +425,13 @@ int public_key_verify_signature(const struct public_key *pkey,
+ 			goto error_free_key;
+ 	}
+ 
++	if (strcmp(sig->encoding, "pss") == 0) {
++		ret = crypto_akcipher_set_sig_params(tfm, sig, sizeof(*sig));
++		if (ret) {
++			goto error_free_key;
++		}
++	}
++
+ 	sg_init_table(src_sg, 2);
+ 	sg_set_buf(&src_sg[0], sig->s, sig->s_size);
+ 	sg_set_buf(&src_sg[1], sig->digest, sig->digest_size);
+-- 
+2.31.1
+

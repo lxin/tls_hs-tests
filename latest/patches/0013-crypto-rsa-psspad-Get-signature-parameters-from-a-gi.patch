@@ -1,0 +1,77 @@
+From 93885471efcd2b691ba7a9796e9979dfcf726d8c Mon Sep 17 00:00:00 2001
+From: Varad Gautam <varad.gautam@suse.com>
+Date: Thu, 8 Apr 2021 16:15:11 +0200
+Subject: [PATCH 13/22] crypto: rsa-psspad: Get signature parameters from a
+ given signature
+
+Implement akcipher_alg->set_sig_params for rsassa-psspad to receive the
+salt length and MGF hash function for the signature being verified.
+
+Signed-off-by: Varad Gautam <varad.gautam@suse.com>
+---
+ crypto/rsa-psspad.c                  | 21 ++++++++++++++++++++-
+ include/crypto/internal/rsa-common.h |  2 ++
+ 2 files changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/crypto/rsa-psspad.c b/crypto/rsa-psspad.c
+index 855e82ca071a..eec303bb55b2 100644
+--- a/crypto/rsa-psspad.c
++++ b/crypto/rsa-psspad.c
+@@ -9,6 +9,7 @@
+ #include <crypto/hash.h>
+ #include <crypto/internal/akcipher.h>
+ #include <crypto/internal/rsa-common.h>
++#include <crypto/public_key.h>
+ 
+ static int psspad_setup_shash(struct crypto_shash **hash_tfm, struct shash_desc **desc,
+ 			      const char *hash_algo)
+@@ -33,6 +34,23 @@ static void psspad_free_shash(struct crypto_shash *hash_tfm, struct shash_desc *
+ 	crypto_free_shash(hash_tfm);
+ }
+ 
++static int psspad_set_sig_params(struct crypto_akcipher *tfm,
++				 const void *sig,
++				 unsigned int siglen)
++{
++	struct akcipher_instance *inst = akcipher_alg_instance(tfm);
++	struct rsapad_inst_ctx *ictx = akcipher_instance_ctx(inst);
++	const struct public_key_signature *s = sig;
++
++	if (!sig)
++		return -EINVAL;
++
++	ictx->salt_len = s->salt_length;
++	ictx->mgf_hash_algo = s->mgf_hash_algo;
++
++	return 0;
++}
++
+ static int psspad_s_v_e_d(struct akcipher_request *req)
+ {
+ 	return -EOPNOTSUPP;
+@@ -48,7 +66,8 @@ static struct akcipher_alg psspad_alg = {
+ 	.verify = psspad_s_v_e_d,
+ 	.set_pub_key = rsapad_set_pub_key,
+ 	.set_priv_key = rsapad_set_priv_key,
+-	.max_size = rsapad_get_max_size
++	.max_size = rsapad_get_max_size,
++	.set_sig_params = psspad_set_sig_params
+ };
+ 
+ static int psspad_create(struct crypto_template *tmpl, struct rtattr **tb)
+diff --git a/include/crypto/internal/rsa-common.h b/include/crypto/internal/rsa-common.h
+index 4fa3cf5a989c..8b7ba0174d5b 100644
+--- a/include/crypto/internal/rsa-common.h
++++ b/include/crypto/internal/rsa-common.h
+@@ -26,6 +26,8 @@ struct rsapad_tfm_ctx {
+ struct rsapad_inst_ctx {
+ 	struct crypto_akcipher_spawn spawn;
+ 	const struct rsa_asn1_template *digest_info;
++	u16 salt_len;
++	const char *mgf_hash_algo;
+ };
+ 
+ struct rsapad_akciper_req_ctx {
+-- 
+2.31.1
+
